@@ -1,0 +1,3 @@
+# Intel Macs only: torch 2.2.2, the last Intel Mac build, needs NumPy 1.x. NumPy 1.x has no
+# builds for Python 3.13 or newer, where the optional EasyOCR helper is skipped anyway.
+numpy<2; python_version < "3.13"

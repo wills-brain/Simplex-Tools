@@ -1,0 +1,49 @@
+# Settings for the app. The launchers add the server address, port and
+# headless mode on the command line.
+
+[server]
+address = "127.0.0.1"
+showEmailPrompt = false
+
+[browser]
+gatherUsageStats = false
+
+[client]
+toolbarMode = "minimal"
+
+# Colors, fonts and shapes from simplexsciences.com.
+[theme]
+base = "light"
+primaryColor = "#112B74"
+backgroundColor = "#EDEDED"
+secondaryBackgroundColor = "#FAFAFA"
+textColor = "#000000"
+linkColor = "#112B74"
+linkUnderline = true
+borderColor = "#000000"
+dataframeBorderColor = "#CFCFCF"
+showWidgetBorder = true
+showSidebarBorder = false
+baseRadius = "none"
+buttonRadius = "6.8px"
+baseFontSize = 15
+font = "Montserrat, Avenir Next, Segoe UI, sans-serif"
+headingFont = "Montserrat, Avenir Next, Segoe UI, sans-serif"
+headingFontSizes = ["34px", "24px", "20px", "17px", "15px", "14px"]
+headingFontWeights = [400, 400, 400, 500, 500, 500]
+
+[[theme.fontFaces]]
+family = "Montserrat"
+url = "https://cdn.jsdelivr.net/npm/@fontsource-variable/montserrat/files/montserrat-latin-wght-normal.woff2"
+weight = "100 900"
+style = "normal"
+
+[[theme.fontFaces]]
+family = "Rubik"
+url = "https://cdn.jsdelivr.net/npm/@fontsource-variable/rubik/files/rubik-latin-wght-normal.woff2"
+weight = "300 900"
+style = "normal"
+
+[theme.sidebar]
+backgroundColor = "#EDEDED"
+secondaryBackgroundColor = "#FAFAFA"

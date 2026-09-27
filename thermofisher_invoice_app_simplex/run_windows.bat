@@ -1,7 +1,3 @@
 @echo off
-cd /d %~dp0
-py -m venv .venv
-call .venv\Scripts\activate
-python -m pip install --upgrade pip
-pip install -r requirements.txt
-streamlit run app.py
+rem Kept for existing shortcuts: runs the launcher one folder up.
+call "%~dp0..\Start Invoice App (Windows).bat" %*

@@ -5,16 +5,37 @@ import re
 import tempfile
 import zipfile
 from dataclasses import dataclass, asdict
-from datetime import date
+from datetime import date, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-import fitz  # PyMuPDF
+import pymupdf as fitz  # PyMuPDF
 import pandas as pd
 import streamlit as st
 from docxtpl import DocxTemplate
 from docx import Document
 from docx.shared import Pt, Inches
+
+from quotes import (
+    BUNDLED_CATALOG,
+    BUNDLED_CATALOG_DATE,
+    DOMESTIC_SERVICE,
+    FEDEX_RATES_URL,
+    INTERNATIONAL_SERVICE,
+    SHIPPING_SERVICES,
+    Product,
+    Quote,
+    QuoteLine,
+    QuoteTemplateError,
+    default_file_label,
+    fetch_catalog,
+    format_money,
+    generate_quote_docx,
+    parse_money,
+    quote_filename,
+    validate_quote,
+)
 
 try:
     import pytesseract
@@ -28,7 +49,9 @@ except Exception:
 
 APP_DIR = Path(__file__).resolve().parent
 DEFAULT_TEMPLATE = APP_DIR / "simplex_invoice_template.docx"
+DEFAULT_QUOTE_TEMPLATE = APP_DIR / "simplex_quote_template.docx"
 BRAND_LOGO = APP_DIR / "simplex_logo_navy.png"
+DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 APP_VERSION = "1.3.9"
 APP_PASSCODE = "simplexlovesdads"
 
@@ -570,7 +593,7 @@ def _find_label_box(img) -> tuple[int, int, int, int] | None:
         return None
     tokens = data.get("text") or []
     n = len(tokens)
-    expected = ["f", "s", "o", "n"]  # Fisher Scientific Order Number — first letters
+    expected = ["f", "s", "o", "n"]  # Fisher Scientific Order Number, first letters
     best: tuple[int, int, int, int] | None = None
     for i in range(n):
         t = (tokens[i] or "").strip()
@@ -709,6 +732,13 @@ def parse_thermofisher_po(text: str, filename: str, file_bytes: bytes | None = N
         line_items=items,
         raw_text=text,
     )
+
+
+@st.cache_data(show_spinner=False, max_entries=64)
+def read_purchase_order(file_bytes: bytes, filename: str, use_ocr: bool) -> tuple[str, str, ParsedPO]:
+    """OCR and parse one PO. Cached so that edits on either tab do not rerun OCR."""
+    text, rotation = extract_text_from_pdf(file_bytes, enable_ocr=use_ocr)
+    return text, rotation, parse_thermofisher_po(text, filename, file_bytes=file_bytes, rotation=rotation)
 
 
 def docx_contains_jinja(template_bytes: bytes) -> bool:
@@ -1043,112 +1073,30 @@ def build_context(sender: dict[str, str], invoice: dict[str, Any], shipping_cost
     return {**sender, **invoice}
 
 
+BRAND_CSS = APP_DIR / "simplex.css"
+
 
 def apply_brand_style() -> None:
-    """Apply Simplex Sciences internal software styling.
-
-    The visual language is deliberately closer to enterprise internal tooling than
-    a consumer prototype: restrained typography, dense information architecture,
-    clear review states, and a limited navy/white/slate palette.
-    """
-    st.markdown(
-        """
-        <style>
-            :root {
-                --simplex-navy: #11165C;
-                --simplex-navy-2: #181E72;
-                --simplex-slate: #334155;
-                --simplex-muted: #64748B;
-                --simplex-border: #D8DEE9;
-                --simplex-surface: #F8FAFC;
-                --simplex-soft: #EEF2FF;
-                --simplex-accent: #2F80ED;
-            }
-            .stApp { background: linear-gradient(180deg, #F8FAFC 0%, #FFFFFF 42%); }
-            [data-testid="stSidebar"] { background: #FFFFFF; border-right: 1px solid var(--simplex-border); }
-            [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 { color: var(--simplex-navy); letter-spacing: -0.01em; }
-            .simplex-hero {
-                border: 1px solid var(--simplex-border);
-                border-radius: 18px;
-                padding: 1.25rem 1.35rem;
-                margin-bottom: 1.1rem;
-                background: linear-gradient(135deg, #11165C 0%, #151C68 56%, #273391 100%);
-                color: white;
-                box-shadow: 0 14px 36px rgba(17, 22, 92, 0.14);
-            }
-            .simplex-eyebrow { font-size: 0.74rem; letter-spacing: 0.12em; text-transform: uppercase; opacity: 0.78; margin-bottom: 0.25rem; }
-            .simplex-title { font-size: 1.88rem; line-height: 1.08; font-weight: 760; letter-spacing: -0.035em; margin: 0; }
-            .simplex-subtitle { font-size: 0.98rem; opacity: 0.88; margin-top: 0.55rem; max-width: 68rem; }
-            .simplex-meta {
-                display: flex; gap: .55rem; flex-wrap: wrap; margin-top: 1rem;
-            }
-            .simplex-pill {
-                border: 1px solid rgba(255,255,255,.24);
-                background: rgba(255,255,255,.09);
-                color: white;
-                padding: .32rem .55rem;
-                border-radius: 999px;
-                font-size: .76rem;
-            }
-            div[data-testid="stAlert"] { border-radius: 14px; border-color: var(--simplex-border); }
-            div[data-testid="stExpander"] { border: 1px solid var(--simplex-border); border-radius: 14px; background: white; }
-            .stTextInput input, .stTextArea textarea, .stDateInput input {
-                border-radius: 10px !important;
-                border-color: #CBD5E1 !important;
-            }
-            .stButton button, .stDownloadButton button {
-                border-radius: 10px !important;
-                border: 1px solid var(--simplex-navy) !important;
-                background: var(--simplex-navy) !important;
-                color: #FFFFFF !important;
-                font-weight: 650 !important;
-            }
-            .stButton button:hover, .stDownloadButton button:hover {
-                background: var(--simplex-navy-2) !important;
-                border-color: var(--simplex-navy-2) !important;
-            }
-            h1, h2, h3 { color: var(--simplex-navy); letter-spacing: -0.02em; }
-            hr { border-color: var(--simplex-border); }
-            .simplex-footer {
-                margin-top: 2rem;
-                padding-top: .9rem;
-                border-top: 1px solid var(--simplex-border);
-                color: var(--simplex-muted);
-                font-size: .78rem;
-            }
-            [data-testid="stFileUploaderDropzoneInstructions"] small,
-            [data-testid="stFileUploader"] small,
-            [data-testid="stFileUploaderDropzone"] small,
-            [data-testid="stFileUploaderDropzoneInstructions"] > div > span,
-            section[data-testid="stFileUploadDropzone"] small,
-            .stFileUploader section small,
-            .uploadedFileName + div,
-            .stFileUploader [data-testid="stFileDropzoneInstructions"] small {
-                display: none !important;
-            }
-            [data-testid="stFileUploaderDropzoneInstructions"] > div {
-                font-size: 0.95rem;
-            }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+    """Load the Simplex CSS layer. Theme colors and fonts live in .streamlit/config.toml."""
+    st.html(BRAND_CSS)
 
 
 def render_product_header() -> None:
-    st.markdown("# Thermofisher Invoice Processing")
-    st.caption("Developed for internal use by Simplex Operations, William Shiu (2026)")
+    st.title("Invoices and Quotes", anchor=False)
+
+
+def render_footer() -> None:
+    st.html(f'<div class="ss-footer">Simplex Sciences | Internal use only | Version {APP_VERSION}</div>')
 
 
 def require_passcode() -> None:
     """Block the rest of the UI until the correct passcode is entered."""
     if st.session_state.get("simplex_passcode_ok"):
         return
-    st.markdown("### Restricted access")
-    st.caption("Enter the operations passcode to continue.")
-    with st.form("simplex-passcode-form", clear_on_submit=False):
+    st.markdown("For Simplex Sciences staff. Enter the operations passcode to continue.")
+    with st.form("simplex-passcode-form", clear_on_submit=False, border=False, width=420):
         entered = st.text_input("Passcode", type="password", key="simplex_passcode_input")
-        submitted = st.form_submit_button("Unlock")
+        submitted = st.form_submit_button("Continue", type="primary")
     if submitted:
         if entered == APP_PASSCODE:
             st.session_state["simplex_passcode_ok"] = True
@@ -1158,70 +1106,102 @@ def require_passcode() -> None:
     st.stop()
 
 
+INVOICE_FIELD_LABELS = {
+    "invoice_issued_to": "Invoice issued to",
+    "customer_po_number": "Customer PO number",
+    "bill_to": "Bill to",
+    "ship_to": "Ship to",
+    "currency": "Currency",
+}
+
+SENDER_LABELS = {
+    "company_name": "Company name",
+    "company_address": "Address",
+    "company_email": "Email",
+    "company_phone": "Phone",
+    "bank_name": "Bank",
+    "account_number": "Account number",
+    "direct_deposit_routing": "Direct deposit routing number",
+    "wire_routing": "Wire routing number",
+    "swift_code": "SWIFT code",
+}
+
+
 def main() -> None:
-    st.set_page_config(page_title="Thermofisher Invoice Processing", layout="wide")
+    st.set_page_config(page_title="Invoices and Quotes | Simplex Sciences", page_icon=str(BRAND_LOGO), layout="wide")
     apply_brand_style()
     render_product_header()
     require_passcode()
 
     with st.sidebar:
         if BRAND_LOGO.exists():
-            st.image(str(BRAND_LOGO), use_container_width=True)
-        uploaded_template = st.file_uploader("Upload Simplex invoice template", type=["docx"])
-        st.caption("Leave empty to use the bundled default template, located in the downloaded folder as `simplex_invoice_template.docx`.")
-        use_ocr = st.checkbox("Use OCR for scanned PDFs", value=True)
-        st.markdown("---")
-        st.header("User Entry Required")
+            st.image(str(BRAND_LOGO), width=112)
+        st.subheader("Invoice defaults", anchor=False)
         invoice_date_obj = st.date_input("Invoice date", value=date.today())
         sales_rep_default = st.text_input("Sales rep", value="William Shiu")
-        st.caption("Invoice date and sales rep apply to every uploaded PDF. Shipping date, internal order number, shipping cost, and FedEx tracking are entered per PDF on the right.")
-        st.markdown("---")
+        st.caption("Used for every purchase order. Shipping date, order number, shipping cost, and tracking number are set for each PDF.")
+        uploaded_template = st.file_uploader("Invoice template (.docx)", type=["docx"])
+        st.caption("Optional. Without an upload, the app uses simplex_invoice_template.docx from the app folder.")
+        use_ocr = st.checkbox("Read scanned PDFs with OCR", value=True)
         sender = dict(SENDER_DEFAULTS)
-        with st.expander("Simplex sender/payment info", expanded=True):
+        with st.expander("Sender and payment details"):
             for key, default in SENDER_DEFAULTS.items():
-                label = key.replace("_", " ").title()
+                label = SENDER_LABELS.get(key, key.replace("_", " ").capitalize())
                 if "address" in key:
                     sender[key] = st.text_area(label, value=default, key=f"sender-{key}")
                 else:
                     sender[key] = st.text_input(label, value=default, key=f"sender-{key}")
+            st.caption("Printed on invoices and quotes.")
 
-    pdf_files = st.file_uploader("Upload Thermo Fisher purchase order PDF", type=["pdf"], accept_multiple_files=True)
+    invoice_tab, quote_tab = st.tabs(["Thermo Fisher invoices", "Quotes"])
+    with invoice_tab:
+        render_invoice_tab(uploaded_template, use_ocr, invoice_date_obj, sales_rep_default, sender)
+    with quote_tab:
+        render_quote_tab(sender, sales_rep_default)
+    render_footer()
+
+
+def render_invoice_tab(uploaded_template, use_ocr: bool, invoice_date_obj: date, sales_rep_default: str, sender: dict[str, str]) -> None:
+    pdf_files = st.file_uploader("Thermo Fisher purchase orders (PDF)", type=["pdf"], accept_multiple_files=True)
 
     if not pdf_files:
-        st.stop()
+        st.caption("Upload one or more purchase orders. Each one becomes a Word invoice to review before sending.")
+        return
 
-    reviewed_ack = st.checkbox("I understand that OCR can be incorrect and that I must review the final Word document before sending.")
+    reviewed_ack = st.checkbox("I will check each Word invoice before sending it. OCR can misread values.")
     if not reviewed_ack:
-        st.caption("Tick the acknowledgement above to enable invoice downloads.")
+        st.caption("Tick the box above to enable downloads.")
     template_bytes = uploaded_template.getvalue() if uploaded_template else DEFAULT_TEMPLATE.read_bytes()
     all_generated: dict[str, bytes] = {}
 
-    overall_progress = st.progress(0.0, text="Preparing to process uploaded POs")
+    overall_progress = st.progress(0.0, text="Reading purchase orders")
     total_pdfs = len(pdf_files)
 
     for idx, pdf in enumerate(pdf_files):
         st.divider()
-        st.subheader(f"{idx + 1}. {pdf.name}")
-        file_bytes = pdf.read()
-        overall_progress.progress(idx / max(total_pdfs, 1), text=f"Processing {idx + 1} of {total_pdfs}: {pdf.name}")
-        with st.spinner(f"Reading and OCR-parsing {pdf.name}"):
-            text, rotation = extract_text_from_pdf(file_bytes, enable_ocr=use_ocr)
-            parsed = parse_thermofisher_po(text, pdf.name, file_bytes=file_bytes, rotation=rotation)
+        st.subheader(pdf.name, anchor=False)
+        file_bytes = pdf.getvalue()
+        overall_progress.progress(idx / max(total_pdfs, 1), text=f"Reading {idx + 1} of {total_pdfs}: {pdf.name}")
+        with st.spinner(f"Reading {pdf.name}"):
+            try:
+                text, rotation, parsed = read_purchase_order(file_bytes, pdf.name, use_ocr)
+            except Exception as exc:
+                st.error(f"Could not read {pdf.name}: {exc}")
+                continue
         data = asdict(parsed)
         data["ocr_rotation_used"] = rotation
         data["issue_date"] = invoice_date_obj.isoformat()
         data["sales_rep"] = sales_rep_default
 
-        with st.expander("User Entry Required for this PDF", expanded=True):
-            u1, u2, u3, u4 = st.columns(4)
-            with u1:
-                per_shipping_date_obj = st.date_input("Shipping date", value=date.today(), key=f"shipping-date-{idx}")
-            with u2:
-                per_internal_order_number = st.text_input("Internal order number", value="FS", key=f"internal-order-{idx}")
-            with u3:
-                per_shipping_cost = st.text_input("Shipping cost", value="", key=f"shipping-cost-{idx}")
-            with u4:
-                per_tracking_number = st.text_input("FedEx tracking number", value="", key=f"tracking-number-{idx}")
+        u1, u2, u3, u4 = st.columns(4)
+        with u1:
+            per_shipping_date_obj = st.date_input("Shipping date", value=date.today(), key=f"shipping-date-{idx}")
+        with u2:
+            per_internal_order_number = st.text_input("Internal order number", value="FS", key=f"internal-order-{idx}")
+        with u3:
+            per_shipping_cost = st.text_input("Shipping cost (USD)", value="", key=f"shipping-cost-{idx}")
+        with u4:
+            per_tracking_number = st.text_input("FedEx tracking number", value="", key=f"tracking-number-{idx}")
 
         data["shipping_date"] = per_shipping_date_obj.isoformat()
         data["order_number"] = per_internal_order_number
@@ -1229,27 +1209,27 @@ def main() -> None:
 
         col1, col2 = st.columns([0.95, 1.05])
         with col1:
-            st.markdown("**Order and invoice fields**")
+            st.markdown("##### Invoice fields")
             edited = {}
             for key in ["invoice_issued_to", "customer_po_number", "bill_to", "ship_to", "currency"]:
-                label = key.replace("_", " ").title()
-                if key == "customer_po_number":
-                    label = "Customer PO Number (from Fisher Scientific Order Number; expected DR...)"
+                label = INVOICE_FIELD_LABELS[key]
                 if key in {"bill_to", "ship_to"}:
                     edited[key] = st.text_area(label, value=data.get(key, ""), height=105, key=f"{idx}-{key}")
+                elif key == "customer_po_number":
+                    edited[key] = st.text_input(label, value=data.get(key, ""), key=f"{idx}-{key}", help="Use the Fisher Scientific order number. It starts with DR.")
                 else:
                     edited[key] = st.text_input(label, value=data.get(key, ""), key=f"{idx}-{key}")
             current_po = str(edited.get("customer_po_number", "")).strip()
             if current_po and not current_po.upper().startswith("DR"):
-                st.warning("Customer PO should be the DR-prefixed value beside Fisher Scientific Order Number. Please review this field before export.")
+                st.warning("Customer PO numbers start with DR. Check this against the Fisher Scientific order number.")
 
         with col2:
-            st.markdown("**Product lines**")
+            st.markdown("##### Products")
             df = pd.DataFrame(data.get("line_items") or [], columns=["quantity", "item", "unit_price", "amount"])
-            edited_df = st.data_editor(df, num_rows="dynamic", use_container_width=True, key=f"items-{idx}")
-            st.caption(f"Document recognition source: {rotation}")
-            with st.expander("Raw extracted text"):
-                st.text_area("Raw text", value=text[:20000], height=320, key=f"raw-{idx}")
+            edited_df = st.data_editor(df, num_rows="dynamic", width="stretch", key=f"items-{idx}")
+            st.caption(f"Text source: {rotation}")
+            with st.expander("Extracted text"):
+                st.text_area("Extracted text", value=text[:20000], height=320, key=f"raw-{idx}", label_visibility="collapsed")
 
         line_items = edited_df.fillna("").to_dict(orient="records")
         final_invoice = {**data, **edited, "line_items": line_items}
@@ -1263,20 +1243,21 @@ def main() -> None:
         context = build_context(sender, final_invoice, per_shipping_cost)
 
         try:
-            with st.spinner(f"Generating Word invoice for {pdf.name}"):
+            with st.spinner(f"Building the invoice for {pdf.name}"):
                 docx_bytes = generate_docx(template_bytes, context)
             output_name = f"{safe_filename(final_invoice.get('customer_po_number') or final_invoice.get('order_number') or pdf.name)}_simplex_invoice.docx"
             all_generated[output_name] = docx_bytes
             st.download_button(
-                "Download this Word invoice",
+                "Download invoice",
                 docx_bytes,
                 file_name=output_name,
-                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                mime=DOCX_MIME,
                 key=f"download-{idx}",
                 disabled=not reviewed_ack,
+                type="primary",
             )
         except Exception as exc:
-            st.error(f"Could not generate invoice for {pdf.name}: {exc}")
+            st.error(f"Could not build the invoice for {pdf.name}: {exc}")
 
     overall_progress.empty()
 
@@ -1285,8 +1266,185 @@ def main() -> None:
         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
             for filename, content in all_generated.items():
                 zf.writestr(filename, content)
-        st.markdown("---")
-        st.download_button("Download all generated invoices as ZIP", zip_buffer.getvalue(), file_name="generated_simplex_invoices.zip", mime="application/zip", disabled=not reviewed_ack)
+        st.divider()
+        st.download_button("Download all invoices (.zip)", zip_buffer.getvalue(), file_name="generated_simplex_invoices.zip", mime="application/zip", disabled=not reviewed_ack, type="primary")
+
+
+CUSTOM_PRODUCT = "Custom product"
+OTHER_SERVICE = "Other service"
+NO_SHIPPING_LINE = "No shipping line"
+DESTINATIONS = ("United States", "International")
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def load_catalog() -> tuple[tuple[Product, ...], str]:
+    """Products and list prices from simplexsciences.com, else the bundled copy."""
+    try:
+        return fetch_catalog(), f"List prices from simplexsciences.com as of {datetime.now():%H:%M}. Unit prices can be edited."
+    except Exception:
+        return BUNDLED_CATALOG, (
+            f"simplexsciences.com could not be reached. Showing saved list prices from {BUNDLED_CATALOG_DATE}."
+        )
+
+
+def _add_quote_line() -> None:
+    ids = st.session_state["quote-line-ids"]
+    ids.append(max(ids) + 1)
+
+
+def _remove_quote_line(line_id: int) -> None:
+    ids = st.session_state["quote-line-ids"]
+    if line_id in ids and len(ids) > 1:
+        ids.remove(line_id)
+
+
+def _render_quote_lines(catalog: dict[str, Product]) -> list[QuoteLine]:
+    ids = st.session_state.setdefault("quote-line-ids", [0])
+    choices = list(catalog) + [CUSTOM_PRODUCT]
+    lines = []
+    for number, line_id in enumerate(ids, start=1):
+        with st.container(key=f"quote-line-{line_id}"):
+            cols = st.columns([3.4, 1.4, 0.9, 1.1], vertical_alignment="bottom")
+            choice = cols[0].selectbox(f"Product {number}", choices, key=f"quote-product-{line_id}")
+            product = catalog.get(choice)
+            if product is None:
+                description = cols[1].text_input("Description", key=f"quote-custom-{line_id}", placeholder="15 nt custom ssDNA marker (100µL)")
+                list_price, price_key = 0.0, "custom"
+            else:
+                option = product.option_labels[0]
+                if len(product.options) > 1:
+                    option = cols[1].selectbox("Dye", product.option_labels, key=f"quote-option-{line_id}-{choice}")
+                description = product.describe(option)
+                list_price, price_key = float(product.price_for(option)), f"{choice}-{option}"
+            quantity = cols[2].number_input("Quantity", min_value=1, step=1, value=1, key=f"quote-qty-{line_id}")
+            unit_price = cols[3].number_input(
+                "Unit price", min_value=0.0, step=1.0, format="%.2f", value=list_price,
+                key=f"quote-price-{line_id}-{price_key}-{list_price}",
+            )
+            line = QuoteLine(" ".join(str(description).split()), int(quantity), parse_money(unit_price) or Decimal("0.00"))
+            meta = st.container(horizontal=True, vertical_alignment="center", gap="medium")
+            note = f"{line.quantity} × {format_money(line.unit_price)} = {format_money(line.amount)}".replace("$", "\\$")
+            if line.unit_price == 0:
+                note += ". Unit price is \\$0.00."
+            meta.caption(note, width="content")
+            if product is not None:
+                meta.link_button("Product page", product.url, type="tertiary")
+            meta.button("Remove", key=f"quote-remove-{line_id}", type="tertiary", on_click=_remove_quote_line, args=(line_id,), disabled=len(ids) == 1)
+        lines.append(line)
+    st.button("Add product", type="tertiary", on_click=_add_quote_line)
+    return lines
+
+
+def _totals_html(quote: Quote, service: str, shipping_price) -> str:
+    if shipping_price is not None:
+        shipping = format_money(shipping_price)
+    else:
+        shipping = "Excluded" if service else "Not on quote"
+    total_label = "Total excluding shipping" if quote.excludes_shipping else "Total"
+    rows = [("Products", format_money(quote.subtotal)), ("Shipping", shipping)]
+    body = "".join(f"<tr><td>{a}</td><td>{b}</td></tr>" for a, b in rows)
+    return f'<table class="ss-totals">{body}<tr class="ss-total"><td>{total_label}</td><td>{format_money(quote.total)} USD</td></tr></table>'
+
+
+def render_quote_tab(sender: dict[str, str], default_sales_rep: str) -> None:
+    # Follow the sidebar sales rep until it is changed here.
+    if st.session_state.get("quote-rep-default") != default_sales_rep:
+        st.session_state["quote-rep-default"] = default_sales_rep
+        st.session_state["quote-sales-rep"] = default_sales_rep
+
+    st.subheader("Customer", anchor=False)
+    c1, c2, c3 = st.columns([1.6, 1, 1])
+    issued_to = c1.text_input("Issued to", key="quote-issued-to", placeholder="Company or contact name")
+    issue_date = c2.date_input("Issue date", value=date.today(), key="quote-issue-date")
+    sales_rep = c3.text_input("Sales rep", key="quote-sales-rep")
+    ship_to = st.text_area("Shipping address", key="quote-ship-to", height=130, placeholder="Company\nStreet\nCity, postal code\nCountry")
+    destination = st.radio("Destination", DESTINATIONS, horizontal=True, key="quote-destination")
+
+    st.subheader("Products", anchor=False)
+    # One catalog per session, so prices do not change under a quote in progress.
+    if "quote-catalog" not in st.session_state:
+        st.session_state["quote-catalog"] = load_catalog()
+    catalog, catalog_note = st.session_state["quote-catalog"]
+    n1 = st.container(horizontal=True, vertical_alignment="center", gap="medium")
+    n1.caption(catalog_note, width="content")
+    if n1.button("Update prices", type="tertiary", key="quote-refresh-prices"):
+        load_catalog.clear()
+        st.session_state["quote-catalog"] = load_catalog()
+        st.rerun()
+    lines = _render_quote_lines({product.name: product for product in catalog})
+
+    st.subheader("Shipping", anchor=False)
+    default_service = DOMESTIC_SERVICE if destination == DESTINATIONS[0] else INTERNATIONAL_SERVICE
+    services = list(SHIPPING_SERVICES) + [OTHER_SERVICE, NO_SHIPPING_LINE]
+    s1, s2 = st.columns([1.4, 1])
+    service_choice = s1.selectbox("FedEx service", services, index=services.index(default_service), key=f"quote-service-{destination}")
+    service = service_choice
+    if service == OTHER_SERVICE:
+        service = s1.text_input("Service name on the quote", key="quote-service-other").strip()
+    elif service == NO_SHIPPING_LINE:
+        service = ""
+    price_text = s2.text_input("Shipping price (USD)", key="quote-shipping-price", placeholder="32.38", disabled=not service)
+    ship_from = ", ".join(line.strip() for line in sender.get("company_address", "").splitlines() if line.strip())
+    st.caption(
+        f"Rate a package from {ship_from} to the shipping address in the "
+        f"[FedEx rate calculator]({FEDEX_RATES_URL}), then enter the price for the selected service. "
+        "Leave the price blank to quote without shipping."
+    )
+
+    problems = []
+    shipping_price = None
+    if service:
+        try:
+            shipping_price = parse_money(price_text)
+        except ValueError:
+            problems.append("Enter the shipping price as a number, for example 32.38.")
+
+    quote = Quote(
+        issued_to=issued_to.strip(),
+        issue_date=issue_date.isoformat(),
+        sales_rep=sales_rep.strip(),
+        ship_to=ship_to,
+        lines=lines,
+        shipping_service=service,
+        shipping_price=shipping_price,
+    )
+    if service_choice == OTHER_SERVICE and not service:
+        problems.append("Enter the shipping service name, or choose No shipping line.")
+    problems = validate_quote(quote) + problems
+
+    st.subheader("Review", anchor=False)
+    st.html(_totals_html(quote, service, shipping_price))
+
+    # Suggest a name from the customer until the field is edited by hand.
+    default_label = default_file_label(quote.issued_to, quote.ship_to)
+    if not st.session_state.get("quote-file-label-edited") and st.session_state.get("quote-file-label") != default_label:
+        st.session_state["quote-file-label"] = default_label
+    label = st.text_input(
+        "Customer name in file name", key="quote-file-label", width=420,
+        on_change=lambda: st.session_state.update({"quote-file-label-edited": True}),
+    )
+    file_name = quote_filename(quote.issue_date, label)
+
+    with st.expander("Quote template"):
+        uploaded_quote_template = st.file_uploader("Quote template (.docx)", type=["docx"], key="quote-template")
+        st.caption("Optional. Without an upload, the app uses simplex_quote_template.docx. A previously sent quote also works.")
+    template_bytes = uploaded_quote_template.getvalue() if uploaded_quote_template else DEFAULT_QUOTE_TEMPLATE.read_bytes()
+
+    docx_bytes = None
+    if problems:
+        st.info("Still needed:\n" + "\n".join(f"- {problem}" for problem in problems))
+    else:
+        try:
+            docx_bytes = generate_quote_docx(template_bytes, quote, sender)
+        except QuoteTemplateError as exc:
+            st.error(str(exc))
+        except Exception as exc:
+            st.error(f"Could not build the quote: {exc}")
+    st.download_button(
+        "Download quote", docx_bytes or b"", file_name=file_name, mime=DOCX_MIME,
+        disabled=docx_bytes is None, key="quote-download", type="primary",
+    )
+    st.caption(f"Saves as {file_name}")
 
 
 if __name__ == "__main__":
