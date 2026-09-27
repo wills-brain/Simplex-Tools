@@ -1,0 +1,118 @@
+name: Desktop app
+
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { id: macos-apple-silicon, os: macos-15 }
+          - { id: macos-intel, os: macos-15-intel }
+          - { id: windows, os: windows-2025 }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      MIN_MACOS: "14.0"
+      TESSDATA_SHA256: 7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - uses: mamba-org/setup-micromamba@v3
+        with:
+          environment-name: tesseract
+          create-args: tesseract=5.5.3 leptonica=1.87.0
+          condarc: |
+            channels:
+              - conda-forge
+          init-shell: none
+
+      - name: Version and paths
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then version="${GITHUB_REF_NAME#v}"; else version="0.0.${GITHUB_RUN_NUMBER}"; fi
+          echo "APP_VERSION=$version" >> "$GITHUB_ENV"
+          echo "TESSERACT_PREFIX=$MAMBA_ROOT_PREFIX/envs/tesseract" >> "$GITHUB_ENV"
+          echo "TESSDATA_DIR=$PWD/build/tessdata" >> "$GITHUB_ENV"
+
+      - name: OCR data
+        run: |
+          mkdir -p build/tessdata
+          curl -fsSL -o build/tessdata/eng.traineddata https://github.com/tesseract-ocr/tessdata_fast/raw/main/eng.traineddata
+          python -c "import hashlib, os, sys; digest = hashlib.sha256(open('build/tessdata/eng.traineddata', 'rb').read()).hexdigest(); print(digest); sys.exit(digest != os.environ['TESSDATA_SHA256'])"
+          source=$(dirname "$(find "$TESSERACT_PREFIX" -type d -name configs -path '*tessdata*' | head -1)")
+          echo "tessdata configs from $source"
+          cp -R "$source/configs" build/tessdata/
+          if [ -d "$source/tessconfigs" ]; then cp -R "$source/tessconfigs" build/tessdata/; fi
+          test -f build/tessdata/configs/txt && test -f build/tessdata/configs/tsv
+
+      - name: Python packages
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r thermofisher_invoice_app_simplex/requirements.txt "pyinstaller==6.22.3" pyinstaller-hooks-contrib certifi
+
+      - name: Build
+        run: pyinstaller --noconfirm --clean --distpath dist --workpath build/pyinstaller packaging/simplex.spec
+
+      - name: Self test and package (Mac)
+        if: runner.os == 'macOS'
+        run: |
+          app="dist/Simplex Invoices and Quotes.app"
+          "$app/Contents/MacOS/Simplex Invoices and Quotes" --selftest selftest.json
+          ditto -c -k --keepParent "$app" "Simplex-Invoices-and-Quotes-${APP_VERSION}-${{ matrix.id }}.zip"
+
+      - name: Self test (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $process = Start-Process "dist\Simplex Invoices and Quotes\Simplex Invoices and Quotes.exe" -ArgumentList "--selftest", "$PWD\selftest.json" -Wait -PassThru
+          Get-Content selftest.json
+          if ($process.ExitCode -ne 0) { exit 1 }
+
+      - name: Installer (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest "https://go.microsoft.com/fwlink/p/?LinkId=2124703" -OutFile packaging\MicrosoftEdgeWebview2Setup.exe
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$env:APP_VERSION" packaging\installer.iss
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.id }}
+          path: Simplex-Invoices-and-Quotes-*
+          archive: false
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: selftest-${{ matrix.id }}
+          path: selftest.json
+          archive: false
+
+  release:
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: out
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: out/Simplex-Invoices-and-Quotes-*
+          generate_release_notes: true

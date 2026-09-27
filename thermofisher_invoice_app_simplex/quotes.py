@@ -1,16 +1,3 @@
-"""Quote generation for the Simplex Sciences operations app.
-
-Fills a Simplex quote .docx from a :class:`Quote`. The bundled
-``simplex_quote_template.docx`` is used by default, but any previously sent
-Simplex quote (such as ``2025_10_28_MERCK.docx``) also works as a template:
-parts of the document are located by their text ("Quote issued to:",
-"Ship to:", the Quantity/Item table, "Total:", "Bank Name:") rather than by
-position, and their existing fonts, indents, and table geometry are kept.
-
-Product names and list prices come from simplexsciences.com when it is
-reachable, with a bundled copy as the fallback.
-"""
-
 from __future__ import annotations
 
 import copy
@@ -51,18 +38,10 @@ _PLAIN_OPTIONS = {"", "none", "standard"}
 
 
 class QuoteTemplateError(ValueError):
-    """The .docx does not have the parts of a Simplex quote."""
+    pass
 
-
-# --------------------------------------------------------------------------
-# Money
-# --------------------------------------------------------------------------
 
 def parse_money(value: Any) -> Decimal | None:
-    """Parse "$1,234.5", "32.38", or 32.38 into Decimal("1234.50"); blank -> None.
-
-    Raises ValueError for text that is not a non-negative amount.
-    """
     if value is None:
         return None
     if isinstance(value, Decimal):
@@ -86,15 +65,10 @@ def format_money(amount: Decimal) -> str:
     return f"${amount:,.2f}"
 
 
-# --------------------------------------------------------------------------
-# Catalog
-# --------------------------------------------------------------------------
-
 @dataclass(frozen=True)
 class Product:
     name: str
     url: str
-    # (option label, list price) pairs in the order the website shows them.
     options: tuple[tuple[str, Decimal], ...]
 
     @property
@@ -108,7 +82,6 @@ class Product:
         return self.options[0][1]
 
     def describe(self, option: str) -> str:
-        """Line-item text, e.g. "ss20 DNA Ladder (100µL), Pre-Dyed"."""
         if option.strip().lower() in _PLAIN_OPTIONS:
             return self.name
         return f"{self.name}, {option}"
@@ -121,8 +94,6 @@ def _p(name: str, slug: str, plain: str, dyed: str) -> Product:
     return Product(name, f"{SITE_URL}/products/p/{slug}", (("None", Decimal(plain)), ("Pre-Dyed", Decimal(dyed))))
 
 
-# Copied from simplexsciences.com on BUNDLED_CATALOG_DATE; used when the site
-# cannot be reached.
 BUNDLED_CATALOG: tuple[Product, ...] = (
     _p("ss10 DNA Ladder (100µL)", "ss10-dna-ladder", "85.00", "115.00"),
     _p("ss10 DNA Ladder 5-Pack (100µL x 5)", "ss10-dna-ladder-5-pack-2", "360.00", "510.00"),
@@ -134,7 +105,6 @@ BUNDLED_CATALOG: tuple[Product, ...] = (
 
 
 def _get_json(url: str, timeout: float) -> dict[str, Any]:
-    # Squarespace serves a page's data as JSON when ?format=json is appended.
     request = urllib.request.Request(
         f"{url}?format=json",
         headers={"User-Agent": "Mozilla/5.0 (Simplex Sciences operations app)"},
@@ -163,7 +133,6 @@ def _product_from_json(data: dict[str, Any], url: str) -> Product | None:
 
 
 def fetch_catalog(timeout: float = 4.0) -> tuple[Product, ...]:
-    """Read every product listed on the ssDNA ladders page. Raises on failure."""
     page = _get_json(CATALOG_PAGE_URL, timeout)
     paths = list(dict.fromkeys(re.findall(r'href="(/products/p/[^"?#]+)"', page.get("mainContent") or "")))
     if not paths:
@@ -176,10 +145,6 @@ def fetch_catalog(timeout: float = 4.0) -> tuple[Product, ...]:
         raise ValueError("no priced products found")
     return products
 
-
-# --------------------------------------------------------------------------
-# Quote model
-# --------------------------------------------------------------------------
 
 @dataclass
 class QuoteLine:
@@ -195,12 +160,12 @@ class QuoteLine:
 @dataclass
 class Quote:
     issued_to: str
-    issue_date: str  # YYYY-MM-DD
+    issue_date: str
     sales_rep: str
-    ship_to: str  # one address line per text line
+    ship_to: str
     lines: list[QuoteLine] = field(default_factory=list)
-    shipping_service: str = DOMESTIC_SERVICE  # "" leaves the shipping line off
-    shipping_price: Decimal | None = None  # None quotes the total excluding shipping
+    shipping_service: str = DOMESTIC_SERVICE
+    shipping_price: Decimal | None = None
     currency: str = "USD"
 
     @property
@@ -236,12 +201,6 @@ def validate_quote(quote: Quote) -> list[str]:
 
 
 def default_file_label(issued_to: str, ship_to: str) -> str:
-    """Short customer name for the file name, e.g. "MERCK" or "SCIEX".
-
-    Uses the first word of the ship to company line when the address starts
-    with a company rather than a street number, else the first word of
-    "issued to".
-    """
     skip_line = re.compile(r"^(attn|attention|c/o|dr|mr|mrs|ms|prof)\b\.?", re.IGNORECASE)
     first_line = next((l.strip() for l in ship_to.splitlines() if l.strip() and not skip_line.match(l.strip())), "")
     for source in ((first_line,) if first_line and not first_line[0].isdigit() else ()) + (issued_to,):
@@ -252,39 +211,18 @@ def default_file_label(issued_to: str, ship_to: str) -> str:
 
 
 def _ascii(text: str) -> str:
-    """"Königstr" -> "Konigstr", so file names survive email and any OS."""
     return unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
 
 
 def quote_filename(issue_date: str, label: str) -> str:
-    """Matches the existing naming: 2025_10_28_MERCK.docx."""
     safe_label = re.sub(r"[^A-Za-z0-9]+", "_", _ascii(label)).strip("_").upper() or "QUOTE"
     return f"{issue_date.replace('-', '_')}_{safe_label}.docx"
 
 
-# --------------------------------------------------------------------------
-# .docx filling
-#
-# Everything is edited in place: existing paragraphs, runs, and table rows are
-# reused, and text that already matches is left untouched, so regenerating a
-# sent quote from its own data reproduces it exactly.
-# --------------------------------------------------------------------------
-
-# Money columns are right-aligned the way the sent quotes do it: left-aligned
-# cells padded with spaces. In Avenir a space is half a digit wide, so widths
-# are counted in "space units" (digits and $ = 2, "." and "," = 1). The sent
-# quotes pad "$159.00" (13 units) with 1 space under Unit price and 5 under
-# Amount, i.e. to 14 and 18 units.
 _UNIT_PRICE_WIDTH, _UNIT_PRICE_MIN_PAD = 14, 1
 _AMOUNT_WIDTH, _AMOUNT_MIN_PAD = 18, 5
-# Shipping line after the items table, as typed in the sent quotes: centered
-# with trailing tabs when shipping is excluded; otherwise tabs and spaces that
-# put the price under the Amount column (4 tabs and 8 spaces for
-# "FedEx International Priority Shipping" in 2025_10_28_MERCK.docx).
 _SHIPPING_EXCLUDED = "{service}\t\t\t\t\t"
 _SHIPPING_PRICE_SPACES = 8
-# Avenir Roman advance widths in twips at 12 pt for ASCII 32 to 126, used to
-# count the tabs a service name needs.
 _AVENIR_TWIPS = (
     67, 67, 125, 133, 133, 200, 173, 67, 67, 67, 107, 160, 67, 80, 67, 89, 133, 133, 133, 133, 133, 133, 133, 133,
     133, 133, 67, 67, 160, 160, 160, 116, 192, 169, 151, 169, 178, 142, 133, 187, 173, 62, 116, 151, 120, 218, 187, 200,
@@ -307,10 +245,6 @@ def _pad_column(values: list[str], width: int, min_pad: int) -> list[str]:
 
 
 def _set_text(paragraph: Paragraph, text: str) -> None:
-    """Replace a paragraph's text, keeping the formatting of its first text run.
-
-    Leaves the paragraph untouched when only trailing spaces differ.
-    """
     if paragraph.text.rstrip(" ") == text.rstrip(" "):
         return
     runs = paragraph.runs
@@ -346,12 +280,6 @@ def _clean_lines(text: str) -> list[str]:
 
 
 def _sync_lines(heading: Paragraph, paragraphs: list[Paragraph], lines: list[str]) -> None:
-    """Make the consecutive `paragraphs` after `heading` show `lines`.
-
-    Existing paragraphs are rewritten in place; extra lines copy the last
-    one's formatting (or, with none, the heading's without bold); surplus
-    paragraphs are removed.
-    """
     for paragraph, line in zip(paragraphs, lines):
         _set_text(paragraph, line)
     if len(lines) > len(paragraphs):
@@ -386,14 +314,12 @@ def _fill_sender_block(doc: Document, sender: dict[str, str]) -> None:
 
 
 def _fill_quote_box(doc: Document, quote: Quote) -> bool:
-    """Fill "Quote issued to / Issue date / Sales rep" in the floating text box."""
     values = {
         "Quote issued to:": quote.issued_to.strip(),
         "Issue date:": quote.issue_date.strip(),
         "Sales rep:": quote.sales_rep.strip(),
     }
     found = False
-    # Word may store the same text box twice (DrawingML plus a VML fallback).
     for box in doc.element.body.iter(qn("w:txbxContent")):
         for p in box.iter(qn("w:p")):
             paragraph = Paragraph(p, None)
@@ -407,7 +333,6 @@ def _fill_quote_box(doc: Document, quote: Quote) -> bool:
                 runs = paragraph.runs
                 label_at = next((i for i, r in enumerate(runs) if label in r.text), None)
                 if label_at is None:
-                    # Label split across runs: rewrite the paragraph as one run.
                     _set_text(paragraph, f"{label} {value}")
                     continue
                 value_proto = runs[label_at + 1] if label_at + 1 < len(runs) else None
@@ -432,7 +357,7 @@ def _find_table(doc: Document, test: Callable[[Table], bool]) -> Table | None:
     return None
 
 
-_SHIP_TO_MIN_LINES = 4  # both sent quotes have four lines below "Ship to:" (SCIEX: three plus a blank)
+_SHIP_TO_MIN_LINES = 4
 
 
 def _fill_ship_to(table: Table, ship_to: str) -> None:
@@ -440,11 +365,9 @@ def _fill_ship_to(table: Table, ship_to: str) -> None:
     paragraphs = cell.paragraphs
     heading_at = next(i for i, p in enumerate(paragraphs) if "Ship to" in p.text)
     following = paragraphs[heading_at + 1 :]
-    # Keep blank paragraphs after the address: they set the box's height.
     last_text = max((i for i, p in enumerate(following) if p.text.strip()), default=-1)
     _sync_lines(paragraphs[heading_at], following[: last_text + 1], _clean_lines(ship_to))
 
-    # Pad shorter addresses with blank lines so the box keeps its height.
     following = cell.paragraphs[heading_at + 1 :]
     if following:
         anchor = following[-1]
@@ -474,11 +397,8 @@ def _fill_items(table: Table, quote: Quote) -> None:
                 element.getparent().remove(element)
         tbl.append(prototype)
         body = list(table.rows)[1:]
-    # Reuse rows in place; extra lines copy the last row; drop the surplus.
     while len(body) < len(quote.lines):
         added = copy.deepcopy(body[-1]._tr)
-        # The first product row carries the rule under the header; later rows
-        # have none (2025_08_12_SCIEX.docx).
         for top in list(added.iter(qn("w:top"))):
             borders = top.getparent()
             if borders.tag == qn("w:tcBorders"):
@@ -501,7 +421,6 @@ def _fill_items(table: Table, quote: Quote) -> None:
 
 
 def _fill_shipping_line(doc: Document, items: Table, total: Table, quote: Quote) -> None:
-    """The "FedEx ... Shipping" paragraph between the items and the total."""
     shipping = None
     element = items._tbl.getnext()
     while element is not None and element is not total._tbl:
@@ -515,7 +434,6 @@ def _fill_shipping_line(doc: Document, items: Table, total: Table, quote: Quote)
             _remove(shipping)
         return
     if shipping is None:
-        # Same paragraph settings as the shipping line in the sent quotes.
         new_p = copy.deepcopy(items.rows[-1].cells[1].paragraphs[0]._p)
         items._tbl.addnext(new_p)
         shipping = Paragraph(new_p, items._parent)
@@ -533,7 +451,7 @@ def _fill_shipping_line(doc: Document, items: Table, total: Table, quote: Quote)
     start_twips = sum(length.twips for length in (fmt.left_indent, fmt.first_line_indent) if length is not None)
     tab_stop = _default_tab_stop(doc)
     widths = [int(float(g.get(qn("w:w")))) for g in items._tbl.tblGrid.findall(qn("w:gridCol"))]
-    last_stop = sum(widths[:3]) // tab_stop * tab_stop  # the tab stop just before the Amount column
+    last_stop = sum(widths[:3]) // tab_stop * tab_stop
     text_end = start_twips + _text_twips(quote.shipping_service)
     tabs = max(1, last_stop // tab_stop - text_end // tab_stop)
 
@@ -553,13 +471,10 @@ def _default_tab_stop(doc: Document) -> int:
 
 
 def _widen_total_value_column(table: Table, text: str) -> None:
-    """Widen the total's value column (taking from the label column) when the
-    amount would otherwise wrap, e.g. "$10,590.00 USD" in the 1.25" cell."""
     grid = table._tbl.tblGrid.findall(qn("w:gridCol"))
     if len(grid) != 2:
         return
     label_w, value_w = (int(float(g.get(qn("w:w")))) for g in grid)
-    # ~67 twips per space unit at 12 pt, "USD" ~ 480 twips, 216 twips of cell margins, 150 slack.
     needed = _space_units(text.replace("USD", "")) * 67 + 480 + 216 + 150
     if needed <= value_w:
         return

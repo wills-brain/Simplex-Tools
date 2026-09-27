@@ -1,6 +1,4 @@
 @echo off
-rem Double click this file to start the Simplex invoice and quote app.
-rem First time: if Windows warns about the file, see README.md.
 setlocal
 title Simplex Invoices and Quotes
 pushd "%~dp0"
@@ -34,8 +32,6 @@ popd
 exit /b 0
 
 :try
-rem Accept a 64 bit x64 CPython 3.10 to 3.14 that is not a free threaded build.
-rem x64 Python on an ARM computer is fine. Input comes from nul so nothing waits for a key.
 %* -c "import platform, sys, sysconfig; ok = (3, 10) <= sys.version_info[:2] <= (3, 14) and platform.python_implementation() == 'CPython' and sysconfig.get_platform() == 'win-amd64' and not sysconfig.get_config_var('Py_GIL_DISABLED'); sys.exit(0 if ok else 1)" <nul >nul 2>&1
 if %errorlevel% EQU 0 set PY=%*
 exit /b 0
