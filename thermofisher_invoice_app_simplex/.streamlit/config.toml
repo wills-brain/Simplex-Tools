@@ -1,6 +1,3 @@
-# Settings for the app. The launchers add the server address, port and
-# headless mode on the command line.
-
 [server]
 address = "127.0.0.1"
 showEmailPrompt = false
@@ -11,7 +8,6 @@ gatherUsageStats = false
 [client]
 toolbarMode = "minimal"
 
-# Colors, fonts and shapes from simplexsciences.com.
 [theme]
 base = "light"
 primaryColor = "#112B74"

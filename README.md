@@ -1,51 +1,38 @@
 # Simplex Invoices and Quotes
 
-Internal Simplex Sciences app for invoices and quotes.
+Internal Simplex Sciences app for invoices and quotes. It opens in its own window on Mac and Windows.
 
-**Thermo Fisher invoices.** Reads Thermo Fisher purchase order PDFs, including scanned copies, and produces the Word invoice after you review each field.
+**Invoices.** Reads purchase orders as PDFs, including scanned Thermo Fisher POs, and produces the Word invoice after you review each field. Thermo Fisher POs use the Thermo Fisher reader; POs and order letters from other customers are read by their labels (PO number, Bill To, Ship To, and the item table).
 
 **Quotes.** Builds a Word quote in the same layout as the quotes we send (for example `2025_10_28_MERCK.docx`). Products and list prices come from simplexsciences.com. The FedEx shipping price is entered by hand.
 
-## Start the app
+## Install
 
-1. On GitHub, click **Code**, then **Download ZIP**.
-2. Unzip the file.
-   * **Windows:** first right click the ZIP file, choose **Properties**, tick **Unblock** and click **OK**. Then right click the ZIP file and choose **Extract All**. Do not run anything from inside the ZIP file.
-3. Double click the launcher in the unzipped folder.
-   * **Mac:** `Start Invoice App (Mac).command`
-   * **Windows:** `Start Invoice App (Windows).bat`
-4. The app opens in your browser. Keep the launcher window open while you use the app. Close the window to stop the app.
+Download the file for your computer from the [latest release](https://github.com/wills-brain/Invoice-Generation/releases/latest):
 
-The first start installs everything the app needs. This is about 1 GB and takes 5 to 15 minutes with an internet connection. Later starts take a few seconds.
+| Computer | File |
+| --- | --- |
+| Mac with Apple silicon (M1 or newer) | `Simplex-Invoices-and-Quotes-...-macos-apple-silicon.zip` |
+| Mac with an Intel processor | `Simplex-Invoices-and-Quotes-...-macos-intel.zip` |
+| Windows 10 or 11 | `Simplex-Invoices-and-Quotes-...-windows-setup.exe` |
 
-### First start on a Mac
+Everything the app needs is included, including the OCR program for scanned PDFs. The Mac app needs macOS 14 Sonoma or newer.
 
-macOS blocks files downloaded from the internet the first time they are opened (macOS 15 Sequoia and later).
+### Mac
 
-1. Double click the launcher. macOS reports that it was not opened. Click **Done**.
-2. Open **System Settings**, then **Privacy & Security**. Under **Security**, click **Open Anyway** next to the launcher's name. The button is shown for about an hour after step 1.
-3. Enter your Mac password and confirm with **Open Anyway**.
-4. If Terminal asks to access the Downloads folder, click **Allow**. You can also move the unzipped folder to Documents first.
+1. Double click the zip file, then drag **Simplex Invoices and Quotes** into the **Applications** folder.
+2. Open it from Applications. macOS reports that it was not opened. Click **Done**.
+3. Open **System Settings**, then **Privacy & Security**. Under **Security**, click **Open Anyway** next to the app's name. The button is shown for about an hour after step 2.
+4. Enter your Mac password and confirm with **Open Anyway**.
 
-Repeat these steps after downloading a new copy.
+After this the app opens normally. Repeat these steps after installing a new version.
 
-### First start on Windows
+### Windows
 
-If **Unblock** was not ticked before unzipping, Windows may show **Open File Security Warning** (click **Run**) or **Windows protected your PC** (click **More info**, then **Run anyway**). With **Smart App Control** turned on, the launcher is blocked. Unzip again after ticking **Unblock** on the ZIP file.
+1. Run the setup file. If Windows shows **Windows protected your PC**, click **More info**, then **Run anyway**.
+2. Setup installs the app for your account (no administrator rights needed), adds it to the Start menu, and installs Microsoft Edge WebView2 if the computer does not have it.
 
-### Requirements
-
-**Python 3.10 to 3.14, 64 bit.** If Python is not found:
-
-* **Mac:** the launcher opens python.org. Install Python 3.13 (Python 3.12.10 on Intel Macs), then double click the launcher again.
-* **Windows:** the launcher offers to install Python 3.13 for your account with winget. No administrator rights are needed. You can also install it from python.org.
-
-**Tesseract OCR,** for scanned PDFs only. PDFs with selectable text work without it. The launcher tells you if it is missing.
-
-* **Mac:** run `brew install tesseract` in Terminal. This needs [Homebrew](https://brew.sh).
-* **Windows:** run `winget install --id tesseract-ocr.tesseract -e` in Command Prompt, or use the installer from the [Tesseract releases page](https://github.com/tesseract-ocr/tesseract/releases).
-
-The app can only be opened from your own computer.
+If **Smart App Control** is turned on, Windows blocks the setup file. It can be turned off in **Windows Security**, **App & browser control**, **Smart App Control settings**.
 
 ## Quotes
 
@@ -58,26 +45,36 @@ The bundled `simplex_quote_template.docx` is used unless you upload a different 
 
 ## Troubleshooting
 
-* **Start over:** delete the app's setup folder, then start the launcher again.
-  * Mac: `~/Library/Application Support/SimplexInvoiceApp`
-  * Windows: `%LOCALAPPDATA%\SimplexInvoiceApp`
-* **Setup log:** `setup.log` in the same folder.
-* **Launcher started twice:** the second window waits for the first one and then opens the browser.
-* **Mac reports that the launcher could not be executed:** the ZIP file was unpacked by another tool. Run `chmod +x "Start Invoice App (Mac).command"` in Terminal from the unzipped folder.
+* **App log:** `~/Library/Application Support/SimplexInvoiceApp/app.log` on a Mac, `%LOCALAPPDATA%\SimplexInvoiceApp\app.log` on Windows.
+* **Mac says the app is damaged:** the zip was unpacked by another program. Download it again and double click the zip in Finder.
+* **The DR number:** Thermo Fisher order numbers are too faint on the scans to read reliably, so the field starts as "DR". Type the digits from the PO.
+
+## Running from the source code
+
+The launchers in this folder run the app from the source code instead of the installed app. They need Python 3.10 to 3.14 and set everything else up on the first start.
+
+* **Mac:** double click `Start Invoice App (Mac).command`
+* **Windows:** double click `Start Invoice App (Windows).bat`
+
+Scanned PDFs then need Tesseract OCR installed: `brew install tesseract` on a Mac, `winget install --id tesseract-ocr.tesseract -e` on Windows.
 
 ## Development
 
 ```bash
 cd thermofisher_invoice_app_simplex
-python3 launcher.py            # same as the double click launchers
-python3 launcher.py --reset    # rebuild the app's Python environment
+python3 launcher.py --setup-only
+python3 desktop.py              # the app window
+python3 desktop.py --selftest   # checks OCR, documents and the app server
 ```
 
-To manage your own environment instead, install `requirements.txt` (and `requirements-ocr.txt` for the optional EasyOCR helper; add `-c constraints-intel-mac.txt` on Intel Macs), then run `streamlit run app.py` in `thermofisher_invoice_app_simplex`.
+The installers are built by GitHub Actions (`.github/workflows/desktop.yml`) for every pull request, and published as a release when a version tag such as `v1.4.0` is pushed.
 
 | File | Purpose |
 | --- | --- |
 | `app.py` | The app, both tabs |
+| `generic_po.py` | Reads purchase orders from customers other than Thermo Fisher |
+| `thermo_qty.py` | Reads the quantity on scanned Thermo Fisher POs when the text is unclear |
 | `quotes.py` | Quote data, the simplexsciences.com catalog, and Word quote output |
-| `launcher.py` | Setup and start, used by both launchers |
-| `simplex_invoice_template.docx`, `simplex_quote_template.docx` | Word templates |
+| `desktop.py` | The app window and the installed app's entry point |
+| `launcher.py` | Setup and start from the source code, used by both launchers |
+| `packaging/` | App icons, the PyInstaller spec, and the Windows installer script |

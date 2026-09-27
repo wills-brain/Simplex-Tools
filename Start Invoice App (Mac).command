@@ -1,7 +1,4 @@
 #!/bin/bash
-# Double click this file in Finder to start the Simplex invoice & quote app.
-# First time on macOS 15 or later: if macOS says the file was "Not Opened",
-# open System Settings > Privacy & Security and click "Open Anyway" (see README.md).
 
 cd "$(dirname "$0")" || exit 1
 LAUNCHER="thermofisher_invoice_app_simplex/launcher.py"
@@ -18,10 +15,8 @@ if [ ! -f "$LAUNCHER" ]; then
   pause_then_exit 1
 fi
 
-# A Finder-launched Terminal may not have Homebrew on its PATH.
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 
-# Succeeds for a 64 bit CPython 3.10 to 3.14 that is not a free threaded build.
 supported() {
   "$1" -c 'import platform, sys, sysconfig
 ok = ((3, 10) <= sys.version_info[:2] <= (3, 14) and sys.maxsize > 2**32
@@ -31,8 +26,6 @@ sys.exit(0 if ok else 1)' </dev/null >/dev/null 2>&1
 }
 
 find_python() {
-  # 3.12 first: it has every optional component on every Mac. Intel Macs
-  # prefer 3.12 and older, which the optional EasyOCR helper needs there.
   local versions="3.12 3.13 3.11 3.14 3.10"
   [ "$(uname -m)" = "x86_64" ] && versions="3.12 3.11 3.10 3.13 3.14"
   local v p
@@ -44,8 +37,6 @@ find_python() {
     done
   done
   p="$(command -v python3 2>/dev/null)"
-  # On a Mac without developer tools, /usr/bin/python3 only pops up an
-  # "install developer tools" dialog (and is Python 3.9 when they are installed).
   if [ -n "$p" ] && ! { [ "$(uname)" = "Darwin" ] && [ "$p" = "/usr/bin/python3" ]; } && supported "$p"; then
     echo "$p"; return 0
   fi
