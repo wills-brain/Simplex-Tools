@@ -1,8 +1,8 @@
-streamlit>=1.35
-pymupdf>=1.24
-pandas>=2.0
-python-docx>=1.1
-docxtpl>=0.16
-pillow>=10.0
-pytesseract>=0.3
-easyocr>=1.7
+# Installed automatically by the "Start Invoice App" launchers (see README.md).
+streamlit>=1.50,<2
+pymupdf>=1.24.3,<2
+pandas>=2.0,<4
+python-docx>=1.1,<2
+docxtpl>=0.16,<1
+pillow>=10.0,<13
+pytesseract>=0.3,<1

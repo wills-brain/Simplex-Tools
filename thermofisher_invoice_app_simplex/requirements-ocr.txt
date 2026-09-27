@@ -1,0 +1,4 @@
+# Optional: EasyOCR helps read the Fisher Scientific order number on scanned
+# POs; the app works without it. The launcher installs it when the computer
+# supports it (not on Intel Macs with Python 3.13 or newer).
+easyocr>=1.7,<2
