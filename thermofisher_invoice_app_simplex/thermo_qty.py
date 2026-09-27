@@ -35,13 +35,13 @@ def qty_from_cell(text: str) -> str:
     return raw if QTY.fullmatch(raw) else ""
 
 
-def _money_cells(text: str) -> list[Decimal]:
+def money_cells(text: str) -> list[Decimal]:
     cells = [c.strip() for c in item_line(text).split("|")]
     return [Decimal(c.replace(",", "")) for c in cells if re.fullmatch(r"\d{1,3}(?:,\d{3})*\.\d{2}", c)]
 
 
 def qty_from_prices(text: str) -> str:
-    money = _money_cells(text)
+    money = money_cells(text)
     if len(money) < 2 or money[-2] <= 0:
         return ""
     quantity = money[-1] / money[-2]
@@ -207,13 +207,20 @@ def vote_quantity(text: str, file_bytes: bytes, rotation: str) -> str:
     return top[0][0] if top and top[0][1] >= 2 else ""
 
 
+def total_line(text: str) -> Decimal | None:
+    found = re.search(r"^\s*TOTAL\s*:\s*(\d{1,3}(?:,\d{3})*\.\d{2})\s*$", text, re.M | re.I)
+    return Decimal(found.group(1).replace(",", "")) if found else None
+
+
 def unit_price_for(text: str, quantity: str) -> Decimal | None:
-    money = _money_cells(text)
+    money = money_cells(text)
     if not money or not quantity:
         return None
     try:
         count = Decimal(quantity)
     except InvalidOperation:
+        return None
+    if count <= 0:
         return None
     extended = money[-1]
     unit = money[-2] if len(money) >= 2 else None

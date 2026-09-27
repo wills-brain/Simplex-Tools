@@ -656,7 +656,7 @@ def parse_thermofisher_po(text: str, filename: str, file_bytes: bytes | None = N
 def is_thermo_fisher_document(text: str) -> bool:
     if len(re.sub(r"\s", "", text)) < 40:
         return True
-    return bool(re.search(r"fisher|thermo|apfax", text, re.I))
+    return bool(re.search(r"\bfisher\s*scientific\b|\bthermo\s*fisher\b|apfax", text, re.I)) or len(re.findall(r"fisher|thermo", text, re.I)) >= 3
 
 
 def parse_other_document(file_bytes: bytes, filename: str, text: str, rotation: str, use_ocr: bool) -> ParsedPO:
@@ -679,16 +679,25 @@ def parse_other_document(file_bytes: bytes, filename: str, text: str, rotation: 
 
 def fill_missing_quantity(parsed: ParsedPO, text: str, file_bytes: bytes, rotation: str) -> None:
     items = parsed.line_items or []
-    if len(items) != 1:
+    if len(items) != 1 or not rotation[:1].isdigit():
         return
     item = items[0]
-    quantity = str(item.get("quantity") or "").strip() or thermo_qty.vote_quantity(text, file_bytes, rotation)
-    if not quantity:
+    present = str(item.get("quantity") or "").strip()
+    quantity = present or thermo_qty.vote_quantity(text, file_bytes, rotation)
+    if not re.fullmatch(r"[1-9]\d*", quantity or ""):
         return
     item["quantity"] = quantity
+    money = thermo_qty.money_cells(text)
+    if not item.get("amount") or not money or money[-1] != Decimal(str(money_to_float(item["amount"]))):
+        return
     unit = thermo_qty.unit_price_for(text, quantity)
-    if unit is not None and item.get("amount"):
-        item["unit_price"] = clean_money(unit)
+    if unit is None or clean_money(unit) == item.get("unit_price"):
+        return
+    if len(money) >= 2 and thermo_qty.total_line(text) != money[-1]:
+        return
+    if present and thermo_qty.vote_quantity(text, file_bytes, rotation) != present:
+        return
+    item["unit_price"] = clean_money(unit)
 
 
 @st.cache_data(show_spinner=False, max_entries=64)
@@ -975,11 +984,12 @@ def build_context(sender: dict[str, str], invoice: dict[str, Any], shipping_cost
     for row in rows:
         if str(row.get("item", "")).strip().lower() != "fedex 2day shipping":
             row["item"] = normalize_product_name(row.get("item", ""))
+    symbol = str(invoice.get("currency") or "USD").strip().upper() == "USD"
     ship_cost_float = money_to_float(shipping_cost)
     if ship_cost_float > 0:
-        rows.append({"quantity": "", "item": "FedEx 2Day Shipping", "unit_price": "", "amount": clean_money(ship_cost_float)})
+        rows.append({"quantity": "", "item": "FedEx 2Day Shipping", "unit_price": "", "amount": clean_money(ship_cost_float, with_symbol=symbol)})
     subtotal = sum(money_to_float(r.get("amount")) for r in rows)
-    invoice = {**invoice, "line_items": rows, "total": clean_money(subtotal)}
+    invoice = {**invoice, "line_items": rows, "total": clean_money(subtotal, with_symbol=symbol)}
     return {**sender, **invoice}
 
 

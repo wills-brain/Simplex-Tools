@@ -61,7 +61,15 @@ def tesseract_program() -> Path | None:
     return next((c for c in candidates if c.is_file()), None)
 
 
+class _HiddenPopen(subprocess.Popen):
+    def __init__(self, *args, **kwargs):
+        kwargs["creationflags"] = kwargs.get("creationflags", 0) | subprocess.CREATE_NO_WINDOW
+        super().__init__(*args, **kwargs)
+
+
 def configure_runtime() -> None:
+    if IS_WINDOWS:
+        subprocess.Popen = _HiddenPopen
     if not IS_WINDOWS and not os.environ.get("TMPDIR"):
         import tempfile
 
@@ -234,23 +242,48 @@ def open_window() -> int:
         width=1320, height=900, min_size=(960, 640), background_color="#EDEDED", text_select=True,
     )
     server: dict[str, subprocess.Popen | None] = {"process": None}
+    closed = threading.Event()
 
-    def boot() -> None:
+    def failed() -> str:
+        return page("The app could not start", f"Close this window and open the app again. If it keeps happening, send the file {log_path()} to support.")
+
+    def run_boot() -> None:
         if translocated:
             window.load_html(page("Move the app to Applications", f"Drag {APP_NAME} from this folder to the Applications folder, then open it from there."))
             return
         for _ in range(3):
+            if closed.is_set():
+                return
             process, port = start_server()
             server["process"] = process
-            if wait_until_ready(process, port):
+            ready = wait_until_ready(process, port)
+            if closed.is_set():
+                stop_server(process)
+                return
+            if ready:
                 window.load_url(f"http://127.0.0.1:{port}/")
                 return
             stop_server(process)
-        window.load_html(page("The app could not start", f"Close this window and open the app again. If it keeps happening, send the file {log_path()} to support."))
+        window.load_html(failed())
+
+    def boot() -> None:
+        try:
+            run_boot()
+        except Exception:
+            import traceback
+
+            try:
+                with open(log_path(), "a", encoding="utf-8") as log:
+                    traceback.print_exc(file=log)
+            except OSError:
+                pass
+            if not closed.is_set():
+                window.load_html(failed())
 
     try:
         webview.start(boot, private_mode=True)
     finally:
+        closed.set()
         stop_server(server["process"])
     return 0
 
