@@ -71,5 +71,6 @@ if IS_MAC:
             "CFBundleVersion": VERSION,
             "LSMinimumSystemVersion": os.environ.get("MIN_MACOS", "14.0"),
             "NSHighResolutionCapable": True,
+            "NSAppleEventsUsageDescription": "Microsoft Word is used to save invoices and quotes as PDF.",
         },
     )

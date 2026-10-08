@@ -214,9 +214,9 @@ def _ascii(text: str) -> str:
     return unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
 
 
-def quote_filename(issue_date: str, label: str) -> str:
+def quote_code(issue_date: str, label: str) -> str:
     safe_label = re.sub(r"[^A-Za-z0-9]+", "_", _ascii(label)).strip("_").upper() or "QUOTE"
-    return f"{issue_date.replace('-', '_')}_{safe_label}.docx"
+    return f"{issue_date.replace('-', '_')}_{safe_label}"
 
 
 _UNIT_PRICE_WIDTH, _UNIT_PRICE_MIN_PAD = 14, 1
@@ -508,6 +508,23 @@ def _fill_total(table: Table, quote: Quote) -> None:
     for paragraph in surplus:
         _remove(paragraph)
     _widen_total_value_column(table, value.strip())
+    if quote.shipping_service and quote.shipping_price is not None:
+        _add_note_row(table, "(Shipping cost estimated)")
+
+
+def _add_note_row(table: Table, text: str) -> None:
+    row = copy.deepcopy(table.rows[0]._tr)
+    for borders in row.iter(qn("w:tcBorders")):
+        for side in list(borders):
+            if side.tag == qn("w:top"):
+                borders.remove(side)
+    table._tbl.append(row)
+    cells = table.rows[-1].cells
+    merged = cells[0].merge(cells[-1])
+    _set_cell(merged, text)
+    _set_alignment(merged.paragraphs[0], WD_ALIGN_PARAGRAPH.RIGHT)
+    for run in merged.paragraphs[0].runs:
+        run.bold = False
 
 
 def _fill_payment_lines(doc: Document, sender: dict[str, str]) -> None:

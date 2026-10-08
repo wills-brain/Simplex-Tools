@@ -17,6 +17,7 @@ from docxtpl import DocxTemplate
 from docx import Document
 from docx.shared import Pt, Inches
 
+import exports
 import generic_po
 import thermo_qty
 from quotes import (
@@ -35,7 +36,7 @@ from quotes import (
     format_money,
     generate_quote_docx,
     parse_money,
-    quote_filename,
+    quote_code,
     validate_quote,
 )
 
@@ -114,12 +115,6 @@ def money_to_float(value: Any) -> float:
         return float(raw)
     except ValueError:
         return 0.0
-
-
-def safe_filename(name: str) -> str:
-    base = Path(str(name)).stem or "invoice"
-    base = re.sub(r"[^A-Za-z0-9._-]+", "_", base).strip("_")
-    return base[:80] or "invoice"
 
 
 def normalize_ocr_text(text: str) -> str:
@@ -1071,12 +1066,71 @@ def main() -> None:
                     sender[key] = st.text_input(label, value=default, key=f"sender-{key}")
             st.caption("Printed on invoices and quotes.")
 
-    invoice_tab, quote_tab = st.tabs(["Thermo Fisher invoices", "Quotes"])
+    invoice_tab, quote_tab, history_tab = st.tabs(["Thermo Fisher invoices", "Quotes", "History"])
     with invoice_tab:
         render_invoice_tab(uploaded_template, use_ocr, invoice_date_obj, sales_rep_default, sender)
     with quote_tab:
         render_quote_tab(sender, sales_rep_default)
+    with history_tab:
+        render_history_tab()
     render_footer()
+
+
+@st.cache_data(show_spinner=False, max_entries=32)
+def pdf_bytes(docx_bytes: bytes) -> bytes:
+    return exports.docx_to_pdf(docx_bytes)
+
+
+def remember(kind: str, name: str, docx_bytes: bytes, customer: str, total: str) -> None:
+    try:
+        exports.record(kind, name, docx_bytes, customer, total)
+    except OSError:
+        pass
+
+
+def export_buttons(name: str, docx_bytes: bytes, key: str, disabled: bool, kind: str = "", customer: str = "", total: str = "") -> None:
+    converter = exports.pdf_converter()
+    on_click = (lambda: remember(kind, name, docx_bytes, customer, total)) if kind else "ignore"
+    word_col, pdf_col = st.columns(2, width=420)
+    with word_col:
+        st.download_button(
+            "Export as Word", docx_bytes, file_name=f"{name}.docx", mime=DOCX_MIME,
+            key=f"{key}-word", disabled=disabled, type="primary", on_click=on_click, width="stretch",
+        )
+    with pdf_col:
+        st.download_button(
+            "Export as PDF", (lambda: pdf_bytes(docx_bytes)), file_name=f"{name}.pdf", mime="application/pdf",
+            key=f"{key}-pdf", disabled=disabled or converter is None, on_click=on_click, width="stretch",
+            help=None if converter else "PDF export needs Microsoft Word or LibreOffice on this computer.",
+        )
+
+
+def unique_name(name: str, taken: set[str]) -> str:
+    candidate, number = name, 2
+    while candidate in taken:
+        candidate = f"{name} ({number})"
+        number += 1
+    taken.add(candidate)
+    return candidate
+
+
+def render_history_tab() -> None:
+    entries = exports.load_history()
+    if not entries:
+        st.caption("Invoices and quotes appear here after they are exported.")
+        return
+    kind = st.segmented_control("Show", ["All", "Invoices", "Quotes"], default="All", key="history-filter")
+    shown = [e for e in entries if kind in (None, "All") or e.get("kind") == kind[:-1].upper()][:200]
+    for index, entry in enumerate(shown):
+        created = entry.get("created", "").replace("T", " ")[:16]
+        details = " | ".join(part for part in (created, entry.get("customer", ""), entry.get("total", "")) if part)
+        st.markdown(f"**{entry['name']}**  \n{details}")
+        try:
+            data = exports.history_file(entry)
+        except OSError:
+            st.caption("The saved file is missing.")
+            continue
+        export_buttons(entry["name"], data, key=f"history-{index}-{entry['file']}", disabled=False)
 
 
 def render_invoice_tab(uploaded_template, use_ocr: bool, invoice_date_obj: date, sales_rep_default: str, sender: dict[str, str]) -> None:
@@ -1086,11 +1140,9 @@ def render_invoice_tab(uploaded_template, use_ocr: bool, invoice_date_obj: date,
         st.caption("Upload one or more purchase orders. Each one becomes a Word invoice to review before sending.")
         return
 
-    reviewed_ack = st.checkbox("I will check each Word invoice before sending it. OCR can misread values.")
-    if not reviewed_ack:
-        st.caption("Tick the box above to enable downloads.")
     template_bytes = uploaded_template.getvalue() if uploaded_template else DEFAULT_TEMPLATE.read_bytes()
-    all_generated: dict[str, bytes] = {}
+    generated: list[dict] = []
+    taken: set[str] = set()
 
     overall_progress = st.progress(0.0, text="Reading purchase orders")
     total_pdfs = len(pdf_files)
@@ -1162,29 +1214,32 @@ def render_invoice_tab(uploaded_template, use_ocr: bool, invoice_date_obj: date,
         try:
             with st.spinner(f"Building the invoice for {pdf.name}"):
                 docx_bytes = generate_docx(template_bytes, context)
-            output_name = f"{safe_filename(final_invoice.get('customer_po_number') or final_invoice.get('order_number') or pdf.name)}_simplex_invoice.docx"
-            all_generated[output_name] = docx_bytes
-            st.download_button(
-                "Download invoice",
-                docx_bytes,
-                file_name=output_name,
-                mime=DOCX_MIME,
-                key=f"download-{idx}",
-                disabled=not reviewed_ack,
-                type="primary",
-            )
+            code = per_internal_order_number.strip() or final_invoice.get("customer_po_number") or Path(pdf.name).stem
+            name = unique_name(exports.document_name("INVOICE", code), taken)
+            generated.append({"name": name, "docx": docx_bytes, "customer": str(final_invoice.get("invoice_issued_to", "")), "total": str(context.get("total", ""))})
+            st.caption(f"Saves as {name}")
         except Exception as exc:
             st.error(f"Could not build the invoice for {pdf.name}: {exc}")
 
     overall_progress.empty()
 
-    if all_generated:
-        zip_buffer = io.BytesIO()
-        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-            for filename, content in all_generated.items():
-                zf.writestr(filename, content)
+    if generated:
         st.divider()
-        st.download_button("Download all invoices (.zip)", zip_buffer.getvalue(), file_name="generated_simplex_invoices.zip", mime="application/zip", disabled=not reviewed_ack, type="primary")
+        reviewed_ack = st.checkbox("I understand this generator is for consistent formatting and OCR probably contains errors. I will go in to revise.")
+        for index, item in enumerate(generated):
+            st.markdown(f"**{item['name']}**")
+            export_buttons(item["name"], item["docx"], key=f"invoice-{index}", disabled=not reviewed_ack, kind="INVOICE", customer=item["customer"], total=item["total"])
+        if len(generated) > 1:
+            zip_buffer = io.BytesIO()
+            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+                for item in generated:
+                    zf.writestr(f"{item['name']}.docx", item["docx"])
+
+            def remember_all() -> None:
+                for item in generated:
+                    remember("INVOICE", item["name"], item["docx"], item["customer"], item["total"])
+
+            st.download_button("Export all as Word (.zip)", zip_buffer.getvalue(), file_name="Simplex invoices.zip", mime="application/zip", disabled=not reviewed_ack, on_click=remember_all)
 
 
 CUSTOM_PRODUCT = "Custom product"
@@ -1336,7 +1391,7 @@ def render_quote_tab(sender: dict[str, str], default_sales_rep: str) -> None:
         "Customer name in file name", key="quote-file-label", width=420,
         on_change=lambda: st.session_state.update({"quote-file-label-edited": True}),
     )
-    file_name = quote_filename(quote.issue_date, label)
+    name = exports.document_name("QUOTE", quote_code(quote.issue_date, label))
 
     with st.expander("Quote template"):
         uploaded_quote_template = st.file_uploader("Quote template (.docx)", type=["docx"], key="quote-template")
@@ -1353,11 +1408,8 @@ def render_quote_tab(sender: dict[str, str], default_sales_rep: str) -> None:
             st.error(str(exc))
         except Exception as exc:
             st.error(f"Could not build the quote: {exc}")
-    st.download_button(
-        "Download quote", docx_bytes or b"", file_name=file_name, mime=DOCX_MIME,
-        disabled=docx_bytes is None, key="quote-download", type="primary",
-    )
-    st.caption(f"Saves as {file_name}")
+    export_buttons(name, docx_bytes or b"", key="quote", disabled=docx_bytes is None, kind="QUOTE", customer=quote.issued_to, total=f"{format_money(quote.total)} {quote.currency}")
+    st.caption(f"Saves as {name}")
 
 
 if __name__ == "__main__":

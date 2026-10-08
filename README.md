@@ -2,7 +2,7 @@
 
 Internal Simplex Sciences app for invoices and quotes. It opens in its own window on Mac and Windows.
 
-**Invoices.** Reads purchase orders as PDFs, including scanned Thermo Fisher POs, and produces the Word invoice after you review each field. Thermo Fisher POs use the Thermo Fisher reader; POs and order letters from other customers are read by their labels (PO number, Bill To, Ship To, and the item table).
+**Invoices.** Reads purchase orders as PDFs, including scanned Thermo Fisher POs, and produces the invoice after you review each field. Tick the box at the bottom to confirm you will revise the OCR results, then export each invoice as Word or PDF. Files are named like `INVOICE FS068`, from the internal order number. Thermo Fisher POs use the Thermo Fisher reader; POs and order letters from other customers are read by their labels (PO number, Bill To, Ship To, and the item table).
 
 **Quotes.** Builds a Word quote in the same layout as the quotes we send (for example `2025_10_28_MERCK.docx`). Products and list prices come from simplexsciences.com. The FedEx shipping price is entered by hand.
 
@@ -39,7 +39,11 @@ If **Smart App Control** is turned on, Windows blocks the setup file. It can be 
 1. **Customer.** Who the quote is issued to, issue date, sales rep, shipping address, and whether the order ships within the United States.
 2. **Products.** One line per product with the dye option, quantity and unit price. Unit prices start at the list price on simplexsciences.com and can be changed. Choose **Custom product** for anything not in the catalog, and **Add product** for more lines.
 3. **Shipping.** Choose the FedEx service, then use the FedEx rate calculator link to rate the package from our address to the shipping address. Enter the price, or leave it empty to quote the total without shipping.
-4. **Review.** Check the totals and click **Download quote**. The file is named like `2026_09_26_MERCK.docx`.
+4. **Review.** Check the totals and click **Export as Word** or **Export as PDF**. The file is named like `QUOTE 2026_09_26_MERCK`. When a shipping price is entered, the quote says "(Shipping cost estimated)" under the total.
+
+**History.** Every exported invoice and quote is listed in the **History** tab, newest first, and can be exported again as Word or PDF.
+
+PDF export uses Microsoft Word, or LibreOffice if Word is not installed. On a Mac, the first PDF export asks for permission to control Microsoft Word. Click **OK**.
 
 The bundled `simplex_quote_template.docx` is used unless you upload a different template under **Quote template**. A quote we sent before also works as a template.
 
@@ -75,6 +79,7 @@ The installers are built by GitHub Actions (`.github/workflows/desktop.yml`) for
 | `generic_po.py` | Reads purchase orders from customers other than Thermo Fisher |
 | `thermo_qty.py` | Reads the quantity on scanned Thermo Fisher POs when the text is unclear |
 | `quotes.py` | Quote data, the simplexsciences.com catalog, and Word quote output |
+| `exports.py` | PDF export and the history of exported invoices and quotes |
 | `desktop.py` | The app window and the installed app's entry point |
 | `launcher.py` | Setup and start from the source code, used by both launchers |
 | `packaging/` | App icons, the PyInstaller spec, and the Windows installer script |

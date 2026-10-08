@@ -343,13 +343,14 @@ def selftest(report: Path) -> int:
     def imports() -> str:
         import docx
         import docxtpl
+        import exports
         import generic_po
         import numpy
         import pandas
         import pymupdf
         import thermo_qty
 
-        return ", ".join(m.__name__ for m in (docx, docxtpl, generic_po, numpy, pandas, pymupdf, thermo_qty))
+        return ", ".join(m.__name__ for m in (docx, docxtpl, exports, generic_po, numpy, pandas, pymupdf, thermo_qty))
 
     def ocr_word_boxes() -> str:
         import pytesseract
