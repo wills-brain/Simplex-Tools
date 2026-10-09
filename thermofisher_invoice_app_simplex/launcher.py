@@ -308,8 +308,8 @@ def main(argv: list[str] | None = None) -> int:
         state.mkdir(parents=True, exist_ok=True)
         instance = Instance(state)
         if not instance.claim():
-            say("The app is already open in another window.")
-            return 0
+            say("The app is already starting or open in another window. Use that window, or close it and start the app again.")
+            return 1
         try:
             python = ensure_environment(state, args.reset)
             if args.setup_only:
