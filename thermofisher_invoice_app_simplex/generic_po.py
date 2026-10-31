@@ -123,9 +123,10 @@ def parse_amount(text: str) -> Decimal | None:
     else:
         number = number.replace(",", "")
     try:
-        return Decimal(number).quantize(Decimal("0.01"))
+        value = Decimal(number).quantize(Decimal("0.01"))
     except InvalidOperation:
         return None
+    return -value if "(" in token and ")" in token else value
 
 
 def money_in(words: list[Word]) -> list[Decimal]:
@@ -154,6 +155,8 @@ PO_LABELS = re.compile(
     r"|our\s+order\s+(?:no\.?|number)|order\s+(?:#|no\.?|number))\s*:?",
     re.I,
 )
+PO_STRONG = re.compile(r"(?:\bcustomer\s+)?\b(?:p\.?\s?o\.?\s*(?:#|no\.?|nr\.?|number)|purchase\s+order\s*(?:#|no\.?|number)|our\s+order\s+(?:no\.?|number))\s*:?", re.I)
+PO_FUSED = re.compile(r"(?:p\.?o\.?|purchase\s*order)\s*#:?([A-Za-z0-9][\w/-]{2,})", re.I)
 SHIP_LABELS = re.compile(r"\b(?:ship\s*-?\s*to|deliver(?:y)?\s+to|delivery\s+address|shipping\s+address|consignee)\b\s*:?", re.I)
 BILL_LABELS = re.compile(r"\b(?:bill\s*-?\s*to|invoice\s+to|invoice\s+address|billing\s+address|sold\s+to)\b\s*:?", re.I)
 BOTH_LABELS = re.compile(r"\bdelivery\s*/\s*invoice\s+address\b\s*:?", re.I)
@@ -185,7 +188,7 @@ def _label_span(row: Row, pattern: re.Pattern) -> tuple[float, float, list[Word]
 
 
 def _is_date(text: str) -> bool:
-    return bool(re.fullmatch(r"\d{1,2}[./-]\d{1,2}[./-]\d{2,4}|\d{4}-\d{2}-\d{2}", text))
+    return bool(re.fullmatch(r"\d{1,2}[./-]\d{1,2}[./-]\d{2,4}|\d{4}[./-]\d{2}[./-]\d{2}|\d{1,2}[-\s][A-Za-z]{3,9}[-\s]\d{2,4}", text))
 
 
 def _plausible_po(text: str) -> bool:
@@ -194,14 +197,29 @@ def _plausible_po(text: str) -> bool:
 
 
 def find_po_number(rows: list[Row]) -> str:
+    for row in rows:
+        for w in row.words:
+            m = PO_FUSED.fullmatch(w.text)
+            if m and _plausible_po(m.group(1)):
+                return m.group(1)
+    for pattern in (PO_STRONG, PO_LABELS):
+        found = _find_po(rows, pattern)
+        if found:
+            return found
+    return ""
+
+
+def _find_po(rows: list[Row], pattern: re.Pattern) -> str:
     for i, row in enumerate(rows):
-        span = _label_span(row, PO_LABELS)
+        span = _label_span(row, pattern)
         if not span:
             continue
         x0, x1, after = span
         same_line = [w.text for w in after if abs(w.x0 - x1) < 200]
         if same_line and _plausible_po(same_line[0]):
             return same_line[0].strip(" :#")
+        if not re.search(r"#|\bno\b|\bnr\b|number", " ".join(w.text for w in row.words if x0 <= w.x0 < x1), re.I):
+            continue
         for below in rows[i + 1 : i + 3]:
             if below.page != row.page or below.y0 - row.y1 > 30:
                 break
@@ -224,6 +242,17 @@ def _column_limit(rows: list[Row], index: int, x0: float) -> float:
     return limit
 
 
+def _run(words: list[Word], x_from: float, limit: float) -> list[Word]:
+    out: list[Word] = []
+    for w in sorted(words, key=lambda w: w.x0):
+        if w.x0 < x_from or w.x0 >= limit:
+            continue
+        if out and w.x0 - out[-1].x1 > 30:
+            break
+        out.append(w)
+    return out
+
+
 def find_block(rows: list[Row], pattern: re.Pattern) -> tuple[str, str]:
     for i, row in enumerate(rows):
         span = _label_span(row, pattern)
@@ -232,15 +261,15 @@ def find_block(rows: list[Row], pattern: re.Pattern) -> tuple[str, str]:
         x0, x1, after = span
         limit = _column_limit(rows, i, x0)
         lines: list[str] = []
-        same_line = " ".join(w.text for w in after if w.x0 < limit).strip()
+        same_line = " ".join(w.text for w in _run([w for w in after if w.x0 - x1 < 120], -1, limit)).strip()
         if same_line:
             lines.append(same_line)
         last_y = row.y1
         email = ""
         for below in rows[i + 1 : i + 12]:
-            if below.page != row.page:
+            if below.page != row.page or _find_header([below]) is not None:
                 break
-            words = [w for w in below.words if x0 - 12 <= w.x0 < limit]
+            words = _run(below.words, x0 - 12, limit)
             if not words:
                 continue
             height = max(6.0, below.y1 - below.y0)
@@ -251,7 +280,7 @@ def find_block(rows: list[Row], pattern: re.Pattern) -> tuple[str, str]:
             if found_email and re.search(r"invoice|bill|e-?mail", text, re.I):
                 email = found_email.group(0)
                 break
-            if ANY_LABEL.match(text) and lines:
+            if ANY_LABEL.match(text) and lines and not re.match(r"(?:attn|attention|c/o|room|rm|bldg|building|suite|dept|department)\b", text, re.I):
                 break
             if re.fullmatch(r"[\s|/-]*", text):
                 continue
@@ -280,7 +309,8 @@ HEADERS = {
     "unit_price": re.compile(r"^(?:unit\s*(?:price|cost)|price|rate|each|preis|einzelpreis)$", re.I),
     "amount": re.compile(r"^(?:amount|total|sub\s*total|extended(?:\s*(?:cost|price))?|ext\.?\s*price|line\s*total|betrag|gesamt)$", re.I),
 }
-STOP = re.compile(r"\b(?:sub\s*total|order\s+total|invoice\s+total|grand\s+total|total\s*:|tax\s*:|amount\s+due|remit\s+to|bill\s+acct)\b", re.I)
+STOP = re.compile(r"\b(?:sub\s*total|order\s+total|invoice\s+total|grand\s+total|total\s*:|tax\s*:|amount\s+due|remit\s+to|bill\s+acct)(?!\w)", re.I)
+CURRENCY_TOKENS = ("$", "€", "£", "($", "USD", "EUR", "GBP", "CHF")
 SHIPPING = re.compile(r"\b(?:shipping|freight|delivery\s+charge|handling|postage)\b", re.I)
 
 
@@ -324,14 +354,25 @@ def _find_header(rows: list[Row]) -> tuple[int, list[Column]] | None:
     return None
 
 
+def _in_description(word: Word, columns: list[Column]) -> bool:
+    for k, column in enumerate(columns):
+        if column.name != "description":
+            continue
+        right = columns[k + 1].x0 - 20 if k + 1 < len(columns) else float("inf")
+        if column.x0 - 20 <= word.x0 and word.x1 < right:
+            return True
+    return False
+
+
 def _assign(row: Row, columns: list[Column]) -> dict[int, list[Word]]:
     numeric = [k for k, c in enumerate(columns) if c.name in ("quantity", "unit_price", "amount")]
     cells: dict[int, list[Word]] = {}
     for w in row.words:
-        is_money = parse_amount(w.text) is not None or w.text in ("$", "€", "£", "($")
-        if is_money and numeric:
+        is_money = parse_amount(w.text) is not None or w.text.upper() in CURRENCY_TOKENS
+        in_description = _in_description(w, columns)
+        if is_money and numeric and not in_description:
             index = min(numeric, key=lambda k: abs(columns[k].cx - w.cx))
-        elif _qty(w.text) and any(columns[k].name == "quantity" for k in numeric) and w.x0 >= min(columns[k].x0 for k in numeric) - 20:
+        elif _qty(w.text) and any(columns[k].name == "quantity" for k in numeric) and w.x0 >= min(columns[k].x0 for k in numeric) - 20 and not in_description:
             index = min(numeric, key=lambda k: abs(columns[k].cx - w.cx))
         else:
             starts = [k for k, c in enumerate(columns) if c.x0 - 20 <= w.x0]
@@ -349,6 +390,8 @@ def _qty(text: str) -> str:
 
 
 def _item(qty: str, description: str, unit: Decimal | None, amount: Decimal | None) -> dict[str, str]:
+    if qty and unit is not None and amount is not None and (unit * int(qty)).quantize(Decimal("0.01")) != amount:
+        return {"quantity": "", "item": re.sub(r"\s+", " ", description).strip(" ,|"), "unit_price": fmt(unit), "amount": fmt(amount)}
     q = int(qty) if qty else 0
     if unit is None and amount is not None and q:
         unit = (amount / q).quantize(Decimal("0.01"))
@@ -366,19 +409,21 @@ def _item(qty: str, description: str, unit: Decimal | None, amount: Decimal | No
     }
 
 
-def items_from_table(rows: list[Row]) -> tuple[list[dict[str, str]], Decimal | None]:
-    found = _find_header(rows)
-    if not found:
-        return [], None
-    start, columns = found
+def _summary_row(row: Row, columns: list[Column]) -> bool:
+    labels = [w for w in row.words if parse_amount(w.text) is None and not _qty(w.text) and w.text.upper() not in CURRENCY_TOKENS]
+    if not labels or not money_in(row.words):
+        return False
+    starts = [c for c in columns if c.x0 - 20 <= labels[0].x0]
+    return bool(starts) and starts[-1].name in ("quantity", "unit_price", "amount") and any(c.name in ("description", "other") and c.x0 < starts[-1].x0 for c in columns)
+
+
+def _table_entries(rows: list[Row], start: int, columns: list[Column]) -> list[tuple[Row, dict | None, list[str]]]:
     header_page = rows[start].page
-    items: list[dict[str, str]] = []
-    shipping: Decimal | None = None
-    last_row: Row | None = None
+    entries: list[tuple[Row, dict | None, list[str]]] = []
     for row in rows[start + 1 :]:
         if row.page != header_page and _find_header([row]) is None and not money_in(row.words):
             continue
-        if STOP.search(row.text):
+        if STOP.search(row.text) or _summary_row(row, columns):
             break
         cells = _assign(row, columns)
         by_kind: dict[str, list[Word]] = {}
@@ -392,27 +437,63 @@ def items_from_table(rows: list[Row]) -> tuple[list[dict[str, str]], Decimal | N
                     text_parts.append((column.name, text))
         unit_values = money_in(by_kind.get("unit_price", []))
         amount_values = money_in(by_kind.get("amount", []))
+        descriptions = [t for kind, t in text_parts if kind == "description"]
         if not unit_values and not amount_values:
-            words = [t for kind, t in text_parts if kind == "description"]
-            close = last_row is not None and row.page == last_row.page and row.y0 - last_row.y1 < (last_row.y1 - last_row.y0) * 1.2
-            if items and words and close and not SHIPPING.search(" ".join(words)) and not re.match(r"page\s+\d", row.text, re.I):
+            entries.append((row, None, descriptions))
+            continue
+        entries.append((row, {
+            "qty": _qty(" ".join(w.text for w in by_kind.get("quantity", []))),
+            "extras": [t for kind, t in text_parts if kind == "other"],
+            "unit": unit_values[0] if unit_values else None,
+            "amount": amount_values[-1] if amount_values else None,
+        }, descriptions))
+    return entries
+
+
+def items_from_table(rows: list[Row]) -> tuple[list[dict[str, str]], Decimal | None]:
+    found = _find_header(rows)
+    if not found:
+        return [], None
+    start, columns = found
+    entries = _table_entries(rows, start, columns)
+
+    groups: list[list[tuple[Row, dict | None, list[str]]]] = []
+    for entry in entries:
+        row = entry[0]
+        if groups and row.page == groups[-1][-1][0].page and row.y0 - groups[-1][-1][0].y1 < 0.2 * (row.y1 - row.y0):
+            groups[-1].append(entry)
+        else:
+            groups.append([entry])
+
+    items: list[dict[str, str]] = []
+    shipping: Decimal | None = None
+    last_row: Row | None = None
+    for group in groups:
+        priced = [i for i, entry in enumerate(group) if entry[1] is not None]
+        if not priced:
+            words = [t for entry in group for t in entry[2]]
+            first = group[0][0]
+            close = last_row is not None and first.page == last_row.page and first.y0 - last_row.y1 < (last_row.y1 - last_row.y0) * 1.2
+            if items and words and close and not SHIPPING.search(" ".join(words)) and not re.match(r"page\s+\d", first.text, re.I):
                 items[-1]["item"] = f"{items[-1]['item']} {' '.join(words)}".strip()
-                last_row = row
+                last_row = group[-1][0]
             continue
-        description = " ".join(t for kind, t in text_parts if kind == "description")
-        extras = [t for kind, t in text_parts if kind == "other"]
-        if extras and description:
-            description = f"{description} ({', '.join(extras)})"
-        elif extras:
-            description = ", ".join(extras)
-        qty = _qty(" ".join(w.text for w in by_kind.get("quantity", [])))
-        unit = unit_values[0] if unit_values else None
-        amount = amount_values[-1] if amount_values else None
-        last_row = row
-        if SHIPPING.search(description):
-            shipping = amount if amount is not None else unit
-            continue
-        items.append(_item(qty, description, unit, amount))
+        lines: dict[int, list[tuple[int, list[str]]]] = {i: [(i, group[i][2])] for i in priced}
+        for i, entry in enumerate(group):
+            if entry[1] is None:
+                lines[min(priced, key=lambda m: (abs(m - i), m))].append((i, entry[2]))
+        for i in priced:
+            data = group[i][1]
+            description = " ".join(t for _, texts in sorted(lines[i]) for t in texts)
+            if data["extras"] and description:
+                description = f"{description} ({', '.join(data['extras'])})"
+            elif data["extras"]:
+                description = ", ".join(data["extras"])
+            last_row = group[-1][0]
+            if SHIPPING.search(description):
+                shipping = data["amount"] if data["amount"] is not None else data["unit"]
+                continue
+            items.append(_item(data["qty"], description, data["unit"], data["amount"]))
     return [i for i in items if i["item"] or i["amount"]], shipping
 
 
@@ -425,7 +506,11 @@ def items_from_rows(rows: list[Row]) -> list[dict[str, str]]:
             continue
         first_money = money[0][0]
         before = row.words[:first_money]
-        qty_index = next((i for i in range(len(before) - 1, -1, -1) if _qty(before[i].text)), None)
+        before = [w for w in before if w.text.upper() not in CURRENCY_TOKENS]
+        if len(money) == 2:
+            qty_index = next((i for i in range(len(before) - 1, -1, -1) if _qty(before[i].text) and money[0][1] * int(_qty(before[i].text)) == money[1][1]), None)
+        else:
+            qty_index = len(before) - 1 if before and _qty(before[-1].text) else None
         if qty_index is None:
             continue
         description_words = [w.text for w in before[:qty_index] if w.text not in ("$", "€", "£")]
@@ -463,12 +548,16 @@ def parse_document(file_bytes: bytes, use_ocr: bool = True, rotation: str = "") 
     if not items:
         notes.append("No product lines were found. Add them in the table.")
 
+    currency = detect_currency(text)
+    if currency != "USD":
+        items = [{**item, "unit_price": item["unit_price"].lstrip("$"), "amount": item["amount"].lstrip("$")} for item in items]
+
     return {
         "invoice_issued_to": customer,
         "customer_po_number": find_po_number(rows),
         "bill_to": bill_to,
         "ship_to": ship_to,
-        "currency": detect_currency(text),
+        "currency": currency,
         "line_items": items or [{"quantity": "", "item": "", "unit_price": "", "amount": ""}],
         "shipping_cost": f"{shipping:.2f}" if shipping else "",
         "notes": notes,
